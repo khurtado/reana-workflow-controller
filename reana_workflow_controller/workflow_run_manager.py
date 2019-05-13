@@ -1,5 +1,5 @@
 # This file is part of REANA.
-# Copyright (C) 2018 CERN.
+# Copyright (C) 2018, 2019 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -22,8 +22,14 @@ from reana_commons.k8s.api_client import (current_k8s_batchv1_api_client,
 from reana_commons.utils import (create_cvmfs_persistent_volume_claim,
                                  create_cvmfs_storage_class)
 from reana_db.database import Session
+
 from reana_workflow_controller.errors import REANAInteractiveSessionError
-from reana_workflow_controller.config import (
+from reana_workflow_controller.k8s import (build_interactive_k8s_objects,
+                                           delete_k8s_ingress_object,
+                                           delete_k8s_objects_if_exist,
+                                           instantiate_chained_k8s_objects)
+
+from reana_workflow_controller.config import (  # isort:skip
     MANILA_CEPHFS_PVC,
     REANA_STORAGE_BACKEND,
     REANA_WORKFLOW_ENGINE_IMAGE_CWL,
@@ -33,9 +39,6 @@ from reana_workflow_controller.config import (
     TTL_SECONDS_AFTER_FINISHED,
     WORKFLOW_ENGINE_COMMON_ENV_VARS,
     WORKFLOW_ENGINE_COMMON_ENV_VARS_DEBUG)
-from reana_workflow_controller.k8s import (build_interactive_k8s_objects,
-                                           delete_k8s_objects_if_exist,
-                                           instantiate_k8s_objects)
 
 
 class WorkflowRunManager():
@@ -214,18 +217,20 @@ class KubernetesWorkflowRunManager(WorkflowRunManager):
                     "Interactive type {} does not exist.".format(
                         interactive_session_type))
             access_path = self._generate_interactive_workflow_path()
+            self.workflow.interactive_session_type = interactive_session_type
             self.workflow.interactive_session = access_path
-
             workflow_run_name = \
                 self._workflow_run_name_generator(
                     'interactive', type=interactive_session_type)
+            self.workflow.interactive_session_name = workflow_run_name
             kubernetes_objects = \
                 build_interactive_k8s_objects[interactive_session_type](
-                    workflow_run_name, access_path,
+                    workflow_run_name, self.workflow.get_workspace(),
+                    access_path,
                     access_token=self.workflow.get_owner_access_token(),
                     **kwargs)
 
-            instantiate_k8s_objects(
+            instantiate_chained_k8s_objects(
                 kubernetes_objects,
                 KubernetesWorkflowRunManager.default_namespace)
             return access_path
@@ -259,6 +264,18 @@ class KubernetesWorkflowRunManager(WorkflowRunManager):
             current_db_sessions = Session.object_session(self.workflow)
             current_db_sessions.add(self.workflow)
             current_db_sessions.commit()
+
+    def stop_interactive_session(self):
+        """Stop an interactive workflow run."""
+        delete_k8s_ingress_object(
+            ingress_name=self.workflow.interactive_session_name,
+            namespace=KubernetesWorkflowRunManager.default_namespace
+        )
+        self.workflow.interactive_session_name = None
+        self.workflow.interactive_session = None
+        current_db_sessions = Session.object_session(self.workflow)
+        current_db_sessions.add(self.workflow)
+        current_db_sessions.commit()
 
     def stop_batch_workflow_run(self, workflow_run_jobs=None):
         """Stop a batch workflow run along with all its dependent jobs.
