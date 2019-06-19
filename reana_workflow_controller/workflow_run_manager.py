@@ -319,6 +319,7 @@ class KubernetesWorkflowRunManager(WorkflowRunManager):
         spec = client.V1JobSpec(
             template=client.V1PodTemplateSpec())
         spec.template.metadata = workflow_metadata
+
         container = client.V1Container(name=name, image=image,
                                        image_pull_policy='IfNotPresent',
                                        env=[], volume_mounts=[],
@@ -331,11 +332,15 @@ class KubernetesWorkflowRunManager(WorkflowRunManager):
                 'mountPath': SHARED_FS_MAPPING['MOUNT_DEST_PATH'],
             },
         ]
-        spec.template.spec = client.V1PodSpec(containers=[container])
+        security_context = None
+        if os.environ.get("VC3USERID", None):
+            security_context = client.V1SecurityContext(run_as_user=int(os.environ.get("VC3USERID")))
+        spec.template.spec = client.V1PodSpec(containers=[container], security_context=security_context)
         spec.template.spec.volumes = [
             KubernetesWorkflowRunManager.k8s_shared_volume
             [REANA_STORAGE_BACKEND]
         ]
+
         job.spec = spec
         job.spec.template.spec.restart_policy = 'Never'
         job.spec.ttl_seconds_after_finished = TTL_SECONDS_AFTER_FINISHED
